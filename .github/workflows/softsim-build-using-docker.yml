@@ -6,15 +6,18 @@ on:
       - master
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-in-docker-container:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
-    container: ghcr.io/nrfconnect/sdk-nrf-toolchain:v3.1.1
+    container: ghcr.io/nrfconnect/sdk-nrf-toolchain:v3.4.0@sha256:f1dca44678dae83e37404e33f369786f5b2ffe2ed497eec1815f66c3a868bace
     defaults:
       run:
         # Bash shell is needed to set toolchain related environment variables in docker container
@@ -25,6 +28,11 @@ jobs:
       fail-fast: false
       matrix:
         board: [nrf9160dk/nrf9160/ns, nrf9161dk/nrf9161/ns, nrf9151dk/nrf9151/ns, thingy91/nrf9160/ns, thingy91x/nrf9151/ns]
+        # Factory nvs_storage address per board; every other board uses the
+        # default 0xf0000 (see the pin in the build step below).
+        include:
+          - board: thingy91/nrf9160/ns
+            nvs_addr: "0x60000"
 
     steps:
       # Initialize a Zephyr West workspace in its default format
@@ -34,33 +42,129 @@ jobs:
 
       # Ensure that the checkout follows only this build sha and not the master branch
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: modules/lib/onomondo-softsim
+          submodules: true
 
       # Update dependencies and submodules using west
       - name: Fetch nRF and Zephyr workspaces and dependencies
         run: |
           west update -o=--depth=1 --narrow
 
-      - name: Build firmware of static profile sample
-        working-directory: modules/lib/onomondo-softsim/samples/softsim_static_profile
-        run: |
-          west build --sysbuild --pristine=always --board ${{ matrix.board }}
-
-      - name: Build firmware of external profile sample
+      - name: Build firmware of SoftSIM sample
         working-directory: modules/lib/onomondo-softsim/samples/softsim_external_profile
         run: |
           west build --sysbuild --pristine=always --board ${{ matrix.board }}
+          test -f build/merged.hex
+          # The devicetree layouts promise in-place upgrades: nvs_storage must
+          # never move, or the provisioned profile of every device upgraded in
+          # place is destroyed -- and the build that moves it succeeds. Pin the
+          # resolved address per board; the Partition Manager canary further
+          # down pins the same claim for PM mode via partitions.yml.
+          grep -A4 'nvs_storage: partition@' build/softsim_external_profile/zephyr/zephyr.dts \
+            | grep -Eq 'reg = <\s*${{ matrix.nvs_addr || '0xf0000' }} 0x8000\s*>'
 
       - name: Archive name generator
         id: artifact_name
         run: echo "artifact_name=$(echo ${{ matrix.board }} | tr "/" "_")" >> $GITHUB_OUTPUT
 
       - name: Archive SoftSIM External Profile Build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.artifact_name.outputs.artifact_name }}
           path: modules/lib/onomondo-softsim/samples/softsim_external_profile/build/merged.hex
           overwrite: true
           if-no-files-found: warn
+
+      # Compile-check the static-profile mode too. The static vs external delta is
+      # board-independent, so one board is enough. Runs after the archive so its
+      # pristine rebuild doesn't clobber the archived (external) merged.hex.
+      - name: Build firmware (static profile mode, compile check)
+        if: matrix.board == 'nrf9151dk/nrf9151/ns'
+        working-directory: modules/lib/onomondo-softsim/samples/softsim_external_profile
+        run: |
+          west build --sysbuild --pristine=always --board ${{ matrix.board }} \
+            -- -DEXTRA_CONF_FILE=overlay-static.conf
+
+      # The sysbuild hook runs for every sysbuild build in the workspace; hello_world
+      # proves it works without the (deprecated, default-off) Partition Manager.
+      - name: Build an unrelated sample without Partition Manager
+        if: matrix.board == 'nrf9151dk/nrf9151/ns'
+        run: |
+          west build --sysbuild --pristine=always --board ${{ matrix.board }} \
+            -d build-hello zephyr/samples/hello_world
+
+      # Proves nrf_softsim_init() links. The grep keeps CONFIG_SOFTSIM_AUTO_INIT out
+      # of overlay-softsim.conf, where it would override an application's opt-out.
+      - name: Build firmware (manual init mode)
+        if: matrix.board == 'nrf9151dk/nrf9151/ns'
+        working-directory: modules/lib/onomondo-softsim/samples/softsim_external_profile
+        run: |
+          west build --sysbuild --pristine=always --board ${{ matrix.board }} \
+            -- -DEXTRA_CONF_FILE=overlay-manual-init.conf
+          grep -qx '# CONFIG_SOFTSIM_AUTO_INIT is not set' \
+            build/softsim_external_profile/zephyr/.config
+          ! grep -q '^CONFIG_SOFTSIM_AUTO_INIT' ../../overlay-softsim.conf
+
+      # Canary for the deprecated Partition Manager flow, which stays supported
+      # during the devicetree transition window. One board is enough.
+      - name: Build firmware (Partition Manager mode, canary)
+        if: matrix.board == 'nrf9151dk/nrf9151/ns'
+        working-directory: modules/lib/onomondo-softsim/samples/softsim_external_profile
+        run: |
+          west build --sysbuild --pristine=always --board ${{ matrix.board }} \
+            -- -DSB_CONFIG_PARTITION_MANAGER=y
+          test -f build/merged.hex
+          # The devicetree layouts are byte-identical to what PM computed, and
+          # prj.conf no longer pins CONFIG_PM_PARTITION_SIZE_TFM. Pin the PM
+          # side of that claim: a shifted nvs_storage destroys the provisioned
+          # profile of every device upgraded in place, and builds fine.
+          python3 -c "import yaml, sys; p = yaml.safe_load(open('build/partitions.yml'))['nvs_storage']; sys.exit(None if (p['address'], p['size']) == (0xf0000, 0x8000) else f'nvs_storage moved: {p}')"
+
+      # The DFU layout the README documents. Nothing built it before, so its
+      # geometry was verified by inspection only; this is also the only build
+      # that exercises the boot_partition build assert.
+      - name: Build firmware (MCUboot DFU layout)
+        if: matrix.board == 'nrf9151dk/nrf9151/ns'
+        working-directory: modules/lib/onomondo-softsim/samples/softsim_external_profile
+        run: |
+          west build --sysbuild --pristine=always --board ${{ matrix.board }} \
+            -- -DSB_CONFIG_BOOTLOADER_MCUBOOT=y \
+               -DEXTRA_DTC_OVERLAY_FILE=mcuboot-partitions.overlay
+          test -f build/merged.hex
+
+      # Every step above builds our own sample, which wires SoftSIM in through
+      # its CMakeLists.txt, sysbuild.conf and boards/<board>.overlay. These two
+      # cover the README's integration path instead: SoftSIM added to somebody
+      # else's application. at_client is a small NCS sample that uses the modem
+      # library and builds without a bootloader, which is what
+      # nrf91_softsim_partitions.dtsi is written for.
+      #
+      # DTC_OVERLAY_FILE, not EXTRA_DTC_OVERLAY_FILE: at_client carries its own
+      # partition layout and the two cannot stack, so ours has to replace the
+      # application's overlay list rather than append to it.
+      - name: Build a foreign application with SoftSIM
+        if: matrix.board == 'nrf9151dk/nrf9151/ns'
+        env:
+          SOFTSIM: modules/lib/onomondo-softsim
+        run: |
+          west build --sysbuild --pristine=always --board ${{ matrix.board }} \
+            -d build-at-client nrf/samples/cellular/at_client \
+            -- -DOVERLAY_CONFIG="$PWD/$SOFTSIM/overlay-softsim.conf" \
+               -DDTC_OVERLAY_FILE="$PWD/$SOFTSIM/dts/softsim/nrf91_softsim_partitions.dtsi;$PWD/$SOFTSIM/dts/softsim/nrf91_softsim_sram.dtsi"
+          grep -qx 'CONFIG_SOFTSIM=y' build-at-client/at_client/zephyr/.config
+
+      # Same, bundling the template: an integrator has to be able to produce a
+      # flashable artifact for their own application, not just for our sample.
+      - name: Build a foreign application with SoftSIM (bundled template)
+        if: matrix.board == 'nrf9151dk/nrf9151/ns'
+        env:
+          SOFTSIM: modules/lib/onomondo-softsim
+        run: |
+          west build --sysbuild --pristine=always --board ${{ matrix.board }} \
+            -d build-at-client-bundled nrf/samples/cellular/at_client \
+            -- -DOVERLAY_CONFIG="$PWD/$SOFTSIM/overlay-softsim.conf" \
+               -DDTC_OVERLAY_FILE="$PWD/$SOFTSIM/dts/softsim/nrf91_softsim_partitions.dtsi;$PWD/$SOFTSIM/dts/softsim/nrf91_softsim_sram.dtsi" \
+               -DSB_CONFIG_SOFTSIM_BUNDLE_TEMPLATE_HEX=y
+          test -f build-at-client-bundled/merged.hex

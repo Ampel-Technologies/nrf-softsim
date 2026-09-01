@@ -1,0 +1,57 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices"
+  ],
+  "timezone": "Europe/Copenhagen",
+  "dependencyDashboard": true,
+  "rebaseWhen": "never",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "minimumReleaseAge": null
+  },
+  "git-submodules": {
+    "enabled": true
+  },
+  "customManagers": [
+    {
+      "description": "A generic custom manager for updating any yaml fields ending by 'version:' (case insensitive)",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/.+\\.(?:yml|yaml)$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>.*?)(?: depName=(?<depName>.+?))? packageName=(?<packageName>.+?)(?: versioning=(?<versioning>.*?))?(?: extractVersion=(?<extractVersion>.*?))?\\s.+?((?i)VERSION)\\s*:\\s*(?:'|\")(?<currentValue>[^(?:'|\")]+)(?:'|\")",
+        "# renovate: datasource=(?<datasource>.*?)(?: depName=(?<depName>.+?))? packageName=(?<packageName>.+?)(?: versioning=(?<versioning>.*?))?(?: extractVersion=(?<extractVersion>.*?))?\\s.+?((?i)VERSION)\\s*:\\s*(?<currentValue>[^'\"\\s]+)"
+      ]
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "GitHub actions should wait 7 days; github-tags lacks releaseTimestamp, so treat timestamp-less releases as stable to avoid stalling stability-days forever.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "minimumReleaseAge": "14 days",
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
+    },
+    {
+      "description": "Digest updates re-pin an already-released tag; the tag itself has been out for 7 days, so don't gate the pin on a nonexistent release age.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchUpdateTypes": [
+        "digest",
+        "pinDigest"
+      ],
+      "minimumReleaseAge": null
+    },
+    {
+      "description": "onomondo-uicc is pinned to a release tag via the .gitmodules branch field, so only accept refs shaped like a release. The git-refs datasource returns branches and tags in one list, so without this a tag-like branch name could move the pin to an unreleased HEAD.",
+      "matchManagers": [
+        "git-submodules"
+      ],
+      "allowedVersions": "/^v\\d+\\.\\d+\\.\\d+$/"
+    }
+  ]
+}

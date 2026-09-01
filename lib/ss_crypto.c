@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 Onomondo ApS
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -5,14 +10,13 @@
 #include <psa/crypto.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/sys/printk.h>
 
 #include "ss_crypto.h"
-#include "ss_profile.h"
 #include <onomondo/softsim/log.h>
 #include <onomondo/softsim/mem.h>
+#include <onomondo/utils/ss_profile.h>
 
-LOG_MODULE_REGISTER(softsim_crypto, CONFIG_SOFTSIM_LOG_LEVEL);
+LOG_MODULE_REGISTER(softsim_crypto, CONFIG_SOFTSIM_NRF_LOG_LEVEL);
 
 enum key_identifier_base key_id_to_kmu_slot(uint8_t key_id)
 {
@@ -29,7 +33,6 @@ enum key_identifier_base key_id_to_kmu_slot(uint8_t key_id)
 }
 
 #define SHARED_BUFFER_SIZE 256
-static uint8_t shared_buffer[SHARED_BUFFER_SIZE];
 
 #define ASSERT_STATUS(actual, expected)                                                            \
 	do {                                                                                       \
@@ -76,10 +79,8 @@ int ss_utils_ota_calc_cc(uint8_t *cc, size_t cc_len, uint8_t *key, size_t key_le
 			 enum enc_algorithm alg, uint8_t *data1, size_t data1_len, uint8_t *data2,
 			 size_t data2_len)
 {
-	psa_mac_operation_t operation = PSA_MAC_OPERATION_INIT;
 	enum key_identifier_base slot_id = key_id_to_kmu_slot(key[0]);
 
-	psa_key_handle_t key_handle;
 	psa_status_t status;
 
 	/* Only supports AES_CMAC on nRF91 Series as KMU doesn't support 3DES CMAC */
@@ -96,18 +97,12 @@ int ss_utils_ota_calc_cc(uint8_t *cc, size_t cc_len, uint8_t *key, size_t key_le
 		return -EINVAL;
 	}
 
-	status = psa_open_key((psa_key_id_t)slot_id, &key_handle);
-
-	if (status != PSA_SUCCESS) {
-		LOG_ERR("psa_open_key failed! (Error: %d)", status);
-		return -EINVAL;
-	}
-
 	__ASSERT_NO_MSG(data1_len % AES_BLOCKSIZE == 0);
 
 	psa_mac_operation_t mac_op;
 	mac_op = psa_mac_operation_init();
-	status = psa_mac_sign_setup(&mac_op, key_handle, PSA_ALG_CMAC);
+	status = psa_mac_sign_setup(&mac_op, slot_id, PSA_ALG_CMAC);
+	ASSERT_STATUS(status, PSA_SUCCESS);
 
 	uint8_t mac_buf[16];
 	size_t mac_len, stream_block_size = 16, bytes_processed = 0;
@@ -140,7 +135,7 @@ int ss_utils_ota_calc_cc(uint8_t *cc, size_t cc_len, uint8_t *key, size_t key_le
 	LOG_HEXDUMP_DBG(cc, cc_len, "CMAC result OTA SMS");
 
 exit:
-	psa_mac_abort(&operation);
+	psa_mac_abort(&mac_op);
 	return status == PSA_SUCCESS ? 0 : -EINVAL;
 }
 
@@ -159,7 +154,6 @@ void ss_utils_3des_encrypt(uint8_t *buffer, size_t buffer_len, const uint8_t *ke
 void ss_utils_aes_decrypt(uint8_t *buffer, size_t buffer_len, const uint8_t *key, size_t key_len)
 {
 	enum key_identifier_base slot_id = key_id_to_kmu_slot(key[0]);
-	psa_key_handle_t key_handle;
 	psa_status_t status;
 
 	LOG_DBG("AES decrypt: resolved to key id: %d", slot_id);
@@ -169,16 +163,9 @@ void ss_utils_aes_decrypt(uint8_t *buffer, size_t buffer_len, const uint8_t *key
 		return;
 	}
 
-	status = psa_open_key((psa_key_id_t)slot_id, &key_handle);
-
-	if (status != PSA_SUCCESS) {
-		LOG_ERR("ss_utils_aes_decrypt: psa_open_key failed! (Error: %d)", status);
-		return;
-	}
-
 	psa_cipher_operation_t operation = PSA_CIPHER_OPERATION_INIT;
 	uint8_t iv[AES_BLOCKSIZE] = {0}; /* per standards in telco.. */
-	uint8_t *decrypted_buffer = shared_buffer;
+	uint8_t decrypted_buffer[SHARED_BUFFER_SIZE];
 
 	uint32_t out_len = 0;
 
@@ -201,29 +188,21 @@ exit:
 void ss_utils_aes_encrypt(uint8_t *buffer, size_t buffer_len, const uint8_t *key, size_t key_len)
 {
 	enum key_identifier_base slot_id = key_id_to_kmu_slot(key[0]);
-	psa_key_handle_t key_handle;
 	psa_status_t status;
 
 	LOG_DBG("AES encrypt to key id: %d", slot_id);
 
 	if (slot_id == KEY_ID_UNKNOWN) {
-		printk("Unknown key id: %d", key[0]);
-		return;
-	}
-
-	status = psa_open_key((psa_key_id_t)slot_id, &key_handle);
-
-	if (status != PSA_SUCCESS) {
-		LOG_ERR("ss_utils_aes_decrypt: psa_open_key failed! (Error: %d)", status);
+		LOG_ERR("Unknown key id: %d", key[0]);
 		return;
 	}
 
 	psa_cipher_operation_t operation = PSA_CIPHER_OPERATION_INIT;
 	uint8_t iv[AES_BLOCKSIZE] = {0}; /* per standards in telco... */
-	uint8_t *encrypted_buffer = shared_buffer;
+	uint8_t encrypted_buffer[SHARED_BUFFER_SIZE];
 	uint32_t out_len = 0;
 
-	status = psa_cipher_encrypt_setup(&operation, key_handle, PSA_ALG_CBC_NO_PADDING);
+	status = psa_cipher_encrypt_setup(&operation, slot_id, PSA_ALG_CBC_NO_PADDING);
 	ASSERT_STATUS(status, PSA_SUCCESS);
 
 	psa_cipher_set_iv(&operation, iv, AES_BLOCKSIZE);
@@ -239,37 +218,32 @@ exit:
 	return;
 }
 
-int aes_128_encrypt_block(const uint8_t *key, const uint8_t *in, uint8_t *out)
-{
-	uint8_t buffer_cpy[AES_BLOCKSIZE];
-	memcpy(buffer_cpy, in, AES_BLOCKSIZE);
-	ss_utils_aes_encrypt(buffer_cpy, AES_BLOCKSIZE, key, AES_BLOCKSIZE);
-	memcpy(out, buffer_cpy, AES_BLOCKSIZE);
-	return 0;
-}
-
 int ss_utils_setup_key_helper(size_t key_len, uint8_t key[static key_len], int key_id,
 			      psa_key_usage_t usage_flags, psa_algorithm_t alg,
 			      psa_key_type_t key_type)
 {
 	psa_status_t status;
 	psa_key_attributes_t key_attributes = PSA_KEY_ATTRIBUTES_INIT;
-	psa_key_handle_t key_handle;
 
-	/* Check if it exists already, if it does, destroy it so the new one can be imported */
-	status = psa_open_key(key_id, &key_handle);
+	/* Check if it exists already, if it does, destroy it so the new one can be imported.
+	 * psa_open_key/psa_key_handle_t are the legacy, removed-in-PSA-1.0 handle API;
+	 * query and destroy the key by its id instead. A missing persistent key reports
+	 * as PSA_ERROR_INVALID_HANDLE here, not PSA_ERROR_DOES_NOT_EXIST. */
+	psa_key_attributes_t existing = PSA_KEY_ATTRIBUTES_INIT;
+	status = psa_get_key_attributes((psa_key_id_t)key_id, &existing);
+	psa_reset_key_attributes(&existing); /* free any resources the query allocated */
 
 	if (status == PSA_SUCCESS) {
 		LOG_DBG("Key %d already exists, destroying it before import", key_id);
-		status = psa_destroy_key(key_handle);
+		status = psa_destroy_key((psa_key_id_t)key_id);
 		if (status != PSA_SUCCESS) {
 			LOG_ERR("Failed to destroy a persistent key, ERR: %d", status);
 			return -1;
 		}
-	} else if (status == PSA_ERROR_DOES_NOT_EXIST) {
+	} else if (status == PSA_ERROR_INVALID_HANDLE) {
 		LOG_DBG("Key %d does not exist, proceeding to import", key_id);
 	} else {
-		LOG_ERR("Failed to open a persistent key, ERR: %d", status);
+		LOG_ERR("Failed to query a persistent key, ERR: %d", status);
 		return -1;
 	}
 
@@ -280,7 +254,8 @@ int ss_utils_setup_key_helper(size_t key_len, uint8_t key[static key_len], int k
 	psa_set_key_lifetime(&key_attributes, PSA_KEY_LIFETIME_PERSISTENT);
 	psa_set_key_id(&key_attributes, (psa_key_id_t)key_id);
 
-	status = psa_import_key(&key_attributes, key, key_len, &key_handle);
+	psa_key_id_t imported_id;
+	status = psa_import_key(&key_attributes, key, key_len, &imported_id);
 	if (status != PSA_SUCCESS) {
 		LOG_ERR("Failed to import key, ERR: %d", status);
 		psa_reset_key_attributes(&key_attributes);
@@ -340,17 +315,21 @@ int ss_utils_setup_key(size_t key_len, uint8_t key[static key_len], enum key_ide
 
 int ss_utils_check_key_existence(enum key_identifier_base key_id)
 {
-	psa_status_t status;
-	status = psa_open_key((psa_key_id_t)key_id, &(psa_key_handle_t){0});
-	if (status == PSA_ERROR_DOES_NOT_EXIST) {
+	/* Query the key by id -- no handle to leak (psa_open_key is the legacy,
+	 * removed-in-PSA-1.0 handle API). A missing key reports as
+	 * PSA_ERROR_INVALID_HANDLE here, not PSA_ERROR_DOES_NOT_EXIST. */
+	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+	psa_status_t status = psa_get_key_attributes((psa_key_id_t)key_id, &attr);
+	psa_reset_key_attributes(&attr); /* free any resources the query allocated */
+
+	if (status == PSA_ERROR_INVALID_HANDLE) {
 		LOG_DBG("Key %d does not exist", key_id);
 		return 0; /* Key does not exist */
 	} else if (status != PSA_SUCCESS) {
-		LOG_ERR("Failed to open key %d, error: %d", key_id, status);
+		LOG_ERR("Failed to query key %d, error: %d", key_id, status);
 		return -1; /* Error occurred */
-	} else if (status == PSA_SUCCESS) {
-		LOG_DBG("Key %d exists", key_id);
 	}
 
-	return status == PSA_SUCCESS;
+	LOG_DBG("Key %d exists", key_id);
+	return 1;
 }

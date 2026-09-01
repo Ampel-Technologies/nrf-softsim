@@ -1,13 +1,22 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 Onomondo ApS
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 #ifndef SS_CRYPTO_H
 #define SS_CRYPTO_H
 
 #include <stdint.h>
 #include <stddef.h>
+#include <errno.h>
 
 #include <onomondo/softsim/log.h>
 
-#define EINVAL        22
 #define AES_BLOCKSIZE 16
+
+/* Binary width of a key as imported into the KMU. The onomondo-uicc
+ * profile parser hands back KI/KIC/KID as 16 raw bytes. */
+#define KMU_KEY_SIZE 16
 
 /**
  * @brief Encryption algorithms supported by calc_cc
@@ -114,16 +123,5 @@ int ss_utils_setup_key(size_t key_len, uint8_t key[static key_len],
  * @return int 1 if key exists, 0 otherwise
  */
 int ss_utils_check_key_existence(enum key_identifier_base key_id);
-
-/**
- * @brief Perform AES-128 block encryption
- *
- * @param key Pointer to AES key
- * @param in Pointer to input plaintext block
- * @param out Pointer to output ciphertext block
- *
- * @return int 0 on success, negative error code otherwise
- */
-int aes_128_encrypt_block(const uint8_t *key, const uint8_t *in, uint8_t *out);
 
 #endif /* SS_CRYPTO_H */

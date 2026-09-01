@@ -17,9 +17,46 @@ config SOFTSIM_AUTO_INIT
     help
         Automatically initialize SoftSIM when the modem is powered on.
 
-config SOFTSIM_DEBUG
-    bool "Enable debug messages for SoftSIM"
+config SOFTSIM_FACTORY_RESET_ON_PROVISION
+    bool "Perform modem factory reset after provisioning"
     default n
+    help
+        Compile the nrf_softsim_modem_factory_reset() helper and have the sample
+        call it right after provisioning a new SoftSIM profile. It issues
+        AT%XFACTORYRESET=0 to wipe modem NVM (carrier config, registration state,
+        preferred networks, etc.), then the sample reboots so the device comes up
+        clean with the new SIM identity. Enable only during initial device
+        provisioning flows.
+
+config SOFTSIM_NRF_DEBUG_LOGS
+    bool "Enable verbose debug logs for the nrf-softsim layer"
+    default n
+    help
+        When y, the nrf-softsim layer (SIM HAL, filesystem, crypto) logs at
+        DBG level and the deferred log buffer is sized to 5000 bytes. Bumps
+        the UART backend buffers too. Production builds should leave this
+        disabled.
+
+config SOFTSIM_LIBS_DEBUG_LOGS
+    bool "Enable verbose debug logs for the onomondo-uicc library"
+    default n
+    help
+        When y, SS_LOGP messages from the onomondo-uicc library are emitted
+        at DBG level via the softsim_uicc Zephyr log module. This is the
+        higher-volume layer, so it sizes the deferred log buffer to 16384
+        bytes (winning over the nrf sizing when both are enabled). Production
+        builds should leave this disabled.
+
+config SOFTSIM_FLASH_BUNDLED_HEX
+    bool "west flash programs the merged hex bundling the SoftSIM template"
+    default n
+    help
+        Point west flash at the sysbuild-level merged.hex, which bundles the
+        firmware with the SoftSIM filesystem template at the nvs_storage
+        address. Set automatically by sysbuild when
+        SB_CONFIG_SOFTSIM_BUNDLE_TEMPLATE_HEX is enabled with devicetree
+        partitioning (the deprecated Partition Manager flow bundles the
+        template into its own merged.hex instead).
 
 config SOFTSIM_STATIC_PROFILE_ENABLE
     bool "Enable static profile"
@@ -33,16 +70,178 @@ config SOFTSIM_STATIC_PROFILE
     help
         Static profile to use for SoftSIM. If empty, the profile should be passed during runtime (just once via nrf_softsim_provision)
 
-config SOFTSIM_STACK_SIZE
-    int "Softsim stack size"
-    default 10000
+menu "Options for the onomondo-uicc submodule"
+
+config SOFTSIM_UICC_ENABLE_SANITIZE
+    bool "Enable sanitizers in onomondo-uicc"
+    default n
+
+config SOFTSIM_UICC_USE_SYSTEM_HEAP
+    bool "Use system malloc/free in onomondo-uicc"
+    default n
+
+config SOFTSIM_UICC_USE_LOGS
+    bool "Enable ss_logp logging in onomondo-uicc"
+    default y
+
+config SOFTSIM_UICC_USE_EXPERIMENTAL_SUSPEND_COMMAND
+    bool "Enable experimental suspend command in onomondo-uicc"
+    default y
+
+config SOFTSIM_UICC_EXTERNAL_CRYPTO_IMPL
+    bool "Use external crypto implementation in onomondo-uicc"
+    default y
+
+config SOFTSIM_UICC_EXTERNAL_KEY_LOAD
+    bool "Enable external key loader in onomondo-uicc"
+    default n
+    depends on !SOFTSIM_UICC_EXTERNAL_CRYPTO_IMPL
+
+config SOFTSIM_UICC_USE_UTILS
+    bool "Build onomondo-uicc utils target"
+    default n
+
+config SOFTSIM_UICC_NO_DEFAULT_IMPL
+    bool "Build onomondo-uicc with no default implementation"
+    default y
+
+config SOFTSIM_UICC_COMPACT_STORAGE
+    bool "Use compact storage implementation in onomondo-uicc"
+    default y
+
+config SOFTSIM_UICC_BUILD_LIB_ONLY
+    bool "Build libraries only in onomondo-uicc"
+    default y
+
+config SOFTSIM_UICC_FS_CHG_MAX_FILES
+    int "Files budgeted in the REFRESH changed-file list"
+    default 20
+    range 1 65535
     help
-        Stack size used by the softsim module
+        Sizes the buffer recording which files remote management changed, so
+        the next REFRESH can name them to the modem. Costs 10 bytes per file
+        and exists twice per SIM session. On overflow the change is logged
+        and left out of the REFRESH file list. Upstream defaults to 100; 20
+        comfortably covers the shipped file tree's real paths.
+
+config SOFTSIM_UICC_SMS_RX_MAX_PARTS
+    int "Concatenated-SMS parts accepted for reassembly"
+    default 5
+    range 1 255
+    help
+        Incoming concatenated SMS claiming more parts than this are refused
+        instead of buffered. Each part costs heap while reassembly is in
+        flight; OTA remote-management commands fit well within 5 parts.
+        Upstream defaults to 255, the TS 23.040 maximum.
+
+endmenu
 
 endif #SOFTSIM
 
 endmenu
 
-module = SOFTSIM
-module-str = Onomondo-SoftSIM
+# Top-level (not under `if SOFTSIM`) so autoconf defines it in every build,
+# including the native_sim unit-test builds that compile nrf_softsim.c without
+# CONFIG_SOFTSIM — same reason the log-level symbols below live here.
+config SOFTSIM_STACK_SIZE
+    int "SoftSIM work-queue thread stack size"
+    default 6000
+    help
+        Stack size of the dedicated work-queue thread that runs all SoftSIM
+        processing (ATR, APDU transactions, filesystem and crypto). The
+        default keeps ~2.7x the high-water mark measured on an nRF9151-DK
+        (2200 bytes across provisioning, LTE attach and 12 re-attach cycles
+        with debug logs on); measure with CONFIG_THREAD_ANALYZER before
+        lowering it further in a product build.
+
+# Conditional defaults for per-layer log levels — placed BEFORE each template
+# source so they win over the template's `default LOG_DEFAULT_LEVEL` fallback
+# (Kconfig: first matching default wins).
+config SOFTSIM_NRF_LOG_LEVEL
+    default 4 if SOFTSIM_NRF_DEBUG_LOGS
+
+module = SOFTSIM_NRF
+module-str = Onomondo-SoftSIM-NRF
 source "${ZEPHYR_BASE}/subsys/logging/Kconfig.template.log_config"
+
+config SOFTSIM_LIBS_LOG_LEVEL
+    default 4 if SOFTSIM_LIBS_DEBUG_LOGS
+
+module = SOFTSIM_LIBS
+module-str = Onomondo-SoftSIM-libs
+source "${ZEPHYR_BASE}/subsys/logging/Kconfig.template.log_config"
+
+# Log / UART buffer defaults for SoftSIM-enabled builds. Either debug flag
+# bumps them; otherwise the production-friendly sizing applies. These are
+# `default` directives so any explicit value in a prj.conf or overlay wins.
+if SOFTSIM
+
+# Stack/heap sizing SoftSIM needs on top of Zephyr's defaults. Previously hard
+# assignments in overlay-softsim.conf, which an application prj.conf could not
+# lower; as `default` directives any explicit value wins.
+config MAIN_STACK_SIZE
+    default 5000
+
+# Measured on an nRF9151-DK: 17856-byte peak across provisioning, LTE attach
+# and 12 re-attach cycles, plus headroom for a worst-case OTA response
+# allocation (~4.1 KB) and margin. Declared as a heap contribution so the
+# kernel rounds the effective pool up to it without overriding an
+# application's own CONFIG_HEAP_MEM_POOL_SIZE (which stays in charge when
+# larger). lib/build_asserts.c enforces the floor on the effective size.
+config HEAP_MEM_POOL_ADD_SIZE_SOFTSIM
+    int "Heap memory pool contribution of SoftSIM"
+    default 24000
+
+config LOG_DEFAULT_LEVEL
+    default 1
+
+config LOG_BUFFER_SIZE
+    default 16384 if SOFTSIM_LIBS_DEBUG_LOGS
+    default 5000 if SOFTSIM_NRF_DEBUG_LOGS
+    # neither → Zephyr's own default applies
+
+config LOG_BACKEND_UART_BUFFER_SIZE
+    default 1024 if SOFTSIM_NRF_DEBUG_LOGS || SOFTSIM_LIBS_DEBUG_LOGS
+
+config UART_0_NRF_TX_BUFFER_SIZE
+    default 512 if SOFTSIM_NRF_DEBUG_LOGS || SOFTSIM_LIBS_DEBUG_LOGS
+
+config LOG_PROCESS_TRIGGER_THRESHOLD
+    default 5
+
+endif # SOFTSIM
+
+# Can't force immediate mode from here (Kconfig ignores select/default on choice
+# symbols like LOG_MODE_IMMEDIATE); the user sets CONFIG_LOG_MODE_IMMEDIATE=y and
+# this auto-couples the console baud to it.
+config SOFTSIM_LOG_IMMEDIATE_MODE
+    bool "Raise console baud for synchronous (immediate) SoftSIM logging"
+    depends on SOFTSIM && LOG_MODE_IMMEDIATE && SERIAL
+    default y
+    select UART_USE_RUNTIME_CONFIGURE
+    help
+        Auto-enabled whenever synchronous logging (CONFIG_LOG_MODE_IMMEDIATE) is
+        on. CONFIG_SOFTSIM_LIBS_DEBUG_LOGS is very high volume: with the default
+        deferred logging the buffer overruns during SIM init and the majority of
+        the trace is dropped (the log shows "--- N messages dropped ---"). Raising
+        CONFIG_LOG_BUFFER_SIZE only trades RAM for a linear, partial improvement
+        and never reaches lossless. Synchronous (immediate) logging instead emits
+        every line in the context of the log call (no buffer, no drops), but it
+        blocks on each write — at 115200 baud that stalls SIM init enough to
+        prevent network registration. This option therefore raises the console
+        (the DT chosen zephyr,console, so any nRF91 target) to
+        SOFTSIM_LOG_IMMEDIATE_MODE_BAUD at early boot so modem/SIM timing still
+        meets its deadlines. Connect your serial terminal at that baud. Set =n to
+        keep immediate mode without changing the baud. Debug only; never in
+        production. (SEGGER RTT, e.g. -S rtt-tracing, is an alternative
+        high-throughput backend that avoids the UART bottleneck entirely.)
+
+config SOFTSIM_LOG_IMMEDIATE_MODE_BAUD
+    int "Console baud rate applied for immediate-mode SoftSIM logging"
+    depends on SOFTSIM_LOG_IMMEDIATE_MODE
+    default 1000000
+    help
+        Baud rate the console is switched to at boot while
+        SOFTSIM_LOG_IMMEDIATE_MODE is active; connect your serial terminal at this
+        rate. The default (1 Mbaud) is high enough that synchronous logging keeps
+        up without stalling SIM init.

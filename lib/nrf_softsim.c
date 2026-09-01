@@ -1,10 +1,14 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 Onomondo ApS
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 #include <autoconf.h>
 
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
-#include "ss_profile.h"
 #include "ss_crypto.h"
 #include <nrf_softsim.h>
 #include <nrf_modem_at.h>
@@ -12,10 +16,11 @@
 #include <modem/nrf_modem_lib.h>
 #include <onomondo/softsim/softsim.h>
 #include <onomondo/softsim/utils.h>
-#include <onomondo/softsim/fs_port.h>
+#include <onomondo/softsim/fs.h>
+#include <onomondo/utils/ss_profile.h>
 
 /* Logging */
-LOG_MODULE_REGISTER(softsim, CONFIG_SOFTSIM_LOG_LEVEL);
+LOG_MODULE_REGISTER(softsim, CONFIG_SOFTSIM_NRF_LOG_LEVEL);
 
 /* SoftSIM memory configuration */
 #define SOFTSIM_PRIORITY 5 /* TODO: What is a good balance here? */
@@ -33,7 +38,10 @@ static void nrf_modem_softsim_req_handler(enum nrf_modem_softsim_cmd req, uint16
 static struct k_work_q softsim_work_q;
 static K_FIFO_DEFINE(softsim_req_fifo);
 static K_WORK_DEFINE(softsim_req_work, softsim_req_task);
-static uint8_t softsim_buffer_out[SIM_HAL_MAX_LE];
+
+#ifdef CONFIG_SOFTSIM_FACTORY_RESET_ON_PROVISION
+static bool just_provisioned;
+#endif /* CONFIG_SOFTSIM_FACTORY_RESET_ON_PROVISION */
 
 /* SoftSIM handle */
 struct ss_context *ctx = NULL;
@@ -53,7 +61,7 @@ struct softsim_req_node {
 /**
  * @brief Initialize the Onomondo SoftSIM.
  */
-int onomondo_init(void)
+int nrf_softsim_init(void)
 {
 	/* Init the filesystem here?
 	 * Pro: pretty smooth :) -> no need to init and deinit more than needed..
@@ -77,7 +85,7 @@ int onomondo_init(void)
 #endif
 
 	if (rc) {
-		LOG_ERR("FS failed to init..\n");
+		LOG_ERR("FS failed to init..");
 		return -1;
 	}
 
@@ -91,31 +99,77 @@ int onomondo_init(void)
 	k_work_queue_start(&softsim_work_q, softsim_stack_area,
 			   K_THREAD_STACK_SIZEOF(softsim_stack_area), SOFTSIM_PRIORITY, NULL);
 
-	ctx = ss_new_ctx(); /* TODO: consider dropping this call here */
+	/* The SIM context (~5 KB of heap) is allocated lazily by the
+	 * NRF_MODEM_SOFTSIM_INIT request, not here. */
 
 	LOG_INF("SoftSIM initialized");
 	return 0;
 }
 
+/* True if the first len bytes of p are all zero. Used to detect profile fields
+ * the parser left unset because their TLV tag was absent from the input. */
+static bool is_all_zero(const uint8_t *p, size_t len)
+{
+	for (size_t i = 0; i < len; i++) {
+		if (p[i] != 0) {
+			return false;
+		}
+	}
+	return true;
+}
+
 /* See in nrf_softsim.h */
 int nrf_softsim_provision(uint8_t *profile_r, size_t len)
 {
+	/* The parser's loop bound underflows below 4 bytes, and it validates against a
+	 * uint16_t length, so anything above UINT16_MAX would be truncated. */
+	if (len < 4 || len > UINT16_MAX) {
+		LOG_ERR("SoftSIM profile length invalid: %zu bytes", len);
+		return -1;
+	}
+
 	struct ss_profile profile = {0};
-	decode_profile(len, profile_r, &profile);
+	uint8_t decode_err =
+		ss_profile_from_string((uint16_t)len, (const char *)profile_r, &profile);
+	if (decode_err != 0) {
+		LOG_ERR("SoftSIM profile decode failed (err %u)", decode_err);
+		return -1;
+	}
+
+	/* Reject a profile missing any field provisioning consumes: IMSI, ICCID, KI,
+	 * OPc, KIC, KID. Checked on the hex-ASCII fields the parser fills, not on the
+	 * decoded keys: a legitimately zero-valued key is '0' characters, not NUL --
+	 * the GSMA TS.48 test profile has exactly that for OPc. */
+	if (is_all_zero(profile._3F00_7ff0_6f07, IMSI_LEN) ||                          /* IMSI */
+	    is_all_zero(profile._3F00_2FE2, ICCID_LEN) ||                              /* ICCID */
+	    is_all_zero(&profile._3F00_A001[0], KEY_SIZE) ||                           /* KI */
+	    is_all_zero(&profile._3F00_A001[KEY_SIZE], KEY_SIZE) ||                    /* OPc */
+	    is_all_zero(&profile._3F00_A004[A004_HEADER_SIZE], KEY_SIZE) ||            /* KIC */
+	    is_all_zero(&profile._3F00_A004[A004_HEADER_SIZE + KEY_SIZE], KEY_SIZE)) { /* KID */
+		LOG_ERR("SoftSIM profile missing required field(s)");
+		ss_profile_wipe(&profile);
+		return -1;
+	}
 
 	/* Import to psa_crypto */
-	ss_utils_setup_key(KMU_KEY_SIZE, profile.K, KEY_ID_KI);
-	ss_utils_setup_key(KMU_KEY_SIZE, profile.KIC, KEY_ID_KIC);
-	ss_utils_setup_key(KMU_KEY_SIZE, profile.KID, KEY_ID_KID);
+	ss_utils_setup_key(KMU_KEY_SIZE, profile.k, KEY_ID_KI);
+	ss_utils_setup_key(KMU_KEY_SIZE, profile.kic, KEY_ID_KIC);
+	ss_utils_setup_key(KMU_KEY_SIZE, profile.kid, KEY_ID_KID);
 
 	LOG_INF("SoftSIM keys written to KMU");
 
 	int status = port_provision(&profile);
 
+	/* The decoded profile holds K/KIC/KID; scrub it before the frame dies. */
+	ss_profile_wipe(&profile);
+
 	if (status != 0) {
 		LOG_ERR("SoftSIM failed to update profile");
 	} else {
 		LOG_INF("SoftSIM fully provisioned");
+#ifdef CONFIG_SOFTSIM_FACTORY_RESET_ON_PROVISION
+		just_provisioned = true;
+#endif /* CONFIG_SOFTSIM_FACTORY_RESET_ON_PROVISION */
 	}
 
 	return status;
@@ -128,6 +182,33 @@ int nrf_softsim_check_provisioned(void)
 	return ss_utils_check_key_existence(KEY_ID_KI) && port_check_provisioned();
 }
 
+#ifdef CONFIG_SOFTSIM_FACTORY_RESET_ON_PROVISION
+/* See in nrf_softsim.h */
+void nrf_softsim_modem_factory_reset(void)
+{
+	LOG_DBG("Performing modem factory reset...");
+	/* Wipe modem NVM (carrier config, registration state, preferred networks)
+	 * so it comes up clean with the new SIM identity. The modem library must be
+	 * initialised first; the caller must reboot afterwards for it to take effect.
+	 * XFACTORYRESET requires the modem to be offline, hence CFUN=4 first. */
+	int err = nrf_modem_at_printf("AT+CFUN=4");
+	if (err) {
+		LOG_ERR("SoftSIM: failed to set modem offline (err %d)", err);
+	}
+
+	err = nrf_modem_at_printf("AT%%XFACTORYRESET=0");
+	if (err) {
+		LOG_ERR("SoftSIM: modem factory reset failed (err %d)", err);
+	}
+}
+
+/* See in nrf_softsim.h */
+bool nrf_softsim_just_provisioned(void)
+{
+	return just_provisioned;
+}
+#endif /* CONFIG_SOFTSIM_FACTORY_RESET_ON_PROVISION */
+
 /* TODO: Evaluate if this is still needed */
 __weak void nrf_modem_softsim_reset_handler(void)
 {
@@ -138,13 +219,29 @@ static void softsim_req_task(struct k_work *item)
 {
 	int err;
 	struct softsim_req_node *s_req;
+	uint8_t softsim_buffer_out[SIM_HAL_MAX_LE];
 
 	while ((s_req = k_fifo_get(&softsim_req_fifo, K_NO_WAIT))) {
+		/* The context is allocated by INIT, which the modem sends first;
+		 * APDU and RESET dereference it and cannot run without it. */
+		if (!ctx && (s_req->req == NRF_MODEM_SOFTSIM_APDU ||
+			     s_req->req == NRF_MODEM_SOFTSIM_RESET)) {
+			LOG_ERR("SoftSIM request %d before INIT", s_req->req);
+			nrf_modem_softsim_err(s_req->req, s_req->req_id);
+			goto free_node;
+		}
+
 		switch (s_req->req) {
 		case NRF_MODEM_SOFTSIM_INIT: {
 			LOG_DBG("SoftSIM INIT REQ");
 			if (!ctx) { /* Check needed since multiple INIT requests can be sent */
 				ctx = ss_new_ctx();
+			}
+
+			if (!ctx) { /* ss_is_suspended(NULL) is 0; ss_reset(NULL) crashes */
+				LOG_ERR("SoftSIM context allocation failed");
+				nrf_modem_softsim_err(s_req->req, s_req->req_id);
+				goto free_node;
 			}
 
 			if (!ss_is_suspended(ctx)) {
@@ -168,9 +265,9 @@ static void softsim_req_task(struct k_work *item)
 					"SoftSIM APDU request");
 
 			size_t req_len = s_req->payload.data_len;
-			size_t rsp_len =
-				ss_command_apdu_transact(ctx, softsim_buffer_out, SIM_HAL_MAX_LE,
-							 s_req->payload.data, &req_len);
+			size_t rsp_len = ss_application_apdu_transact(
+				ctx, softsim_buffer_out, SIM_HAL_MAX_LE, s_req->payload.data,
+				&req_len);
 
 			err = nrf_modem_softsim_res(s_req->req, s_req->req_id, softsim_buffer_out,
 						    rsp_len);
@@ -213,9 +310,13 @@ static void softsim_req_task(struct k_work *item)
 			break;
 		}
 		default:
+			/* Never leave the modem waiting on a req_id. */
+			LOG_ERR("SoftSIM unknown request: %d", s_req->req);
+			nrf_modem_softsim_err(s_req->req, s_req->req_id);
 			break;
 		}
 
+free_node:
 		/* Free the payload data of the request node if allocated */
 		if (s_req->payload.data) {
 			nrf_modem_softsim_data_free(s_req->payload.data);
@@ -249,7 +350,7 @@ void nrf_modem_softsim_req_handler(enum nrf_modem_softsim_cmd req, uint16_t req_
 }
 
 #ifdef CONFIG_SOFTSIM_AUTO_INIT
-SYS_INIT(onomondo_init, APPLICATION, 0);
+SYS_INIT(nrf_softsim_init, APPLICATION, 0);
 
 static void ss_on_modem_lib_init(int ret, void *ctx)
 {
