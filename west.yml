@@ -5,8 +5,9 @@ manifest:
   projects:
     - name: sdk-nrf
       path: nrf
-      revision: v3.1.1
+      revision: v3.4.0
       remote: nrfconnect
       import: true
+      submodules: true
   self:
     path: modules/lib/onomondo-softsim

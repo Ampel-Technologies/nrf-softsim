@@ -1,10 +1,23 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 Onomondo ApS
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 #include <string.h>
 
+#include <zephyr/logging/log.h>
 #include <zephyr/sys/printk.h>
 
 #include "ss_cache.h"
+#include <onomondo/softsim/mem.h>
+
+LOG_MODULE_DECLARE(softsim, CONFIG_SOFTSIM_NRF_LOG_LEVEL);
 
 #define SS_MAX_ENTRIES 10
+
+/* Fixed header preceding the variable-length name in each DIR record:
+ * a 1-byte name length followed by a 2-byte (big-endian) NVS key. */
+#define DIR_RECORD_HEADER_LEN 3
 
 /* See in ss_cache.h */
 struct cache_entry *f_cache_find_buffer(struct cache_entry *entry, struct ss_list *cache)
@@ -73,4 +86,40 @@ struct cache_entry *f_cache_find_by_name(const char *name, struct ss_list *cache
 	}
 
 	return NULL;
+}
+
+/* See in ss_cache.h */
+void generate_dir_table_from_blob(struct ss_list *dirs, uint8_t *blob, size_t size)
+{
+	size_t cursor = 0;
+
+	while (cursor < size) {
+		uint8_t len = blob[cursor]; /* peek the name length */
+		/* Check if the record header and name fit in the remaining blob */
+		if (cursor + DIR_RECORD_HEADER_LEN + len > size) {
+			LOG_WRN("DIR blob truncated; ignoring trailing %u byte(s)",
+				(unsigned)(size - cursor));
+			break;
+		}
+		cursor++;
+
+		uint16_t id = (blob[cursor] << 8) | blob[cursor + 1];
+
+		cursor += 2;
+
+		char *name = SS_ALLOC_N(len + 1);
+		memcpy(name, &blob[cursor], len);
+		name[len] = '\0';
+		cursor += len;
+
+		struct cache_entry *entry = SS_ALLOC(struct cache_entry);
+		memset(entry, 0, sizeof(struct cache_entry));
+
+		entry->key = id;
+		entry->name = name;
+		entry->_flags = (id & 0xFF00) >> 8;
+		entry->buf = NULL;
+
+		ss_list_put(dirs, &entry->list);
+	}
 }

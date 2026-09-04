@@ -1,5 +1,53 @@
 # Changelog
 
+## [6.1.0](https://github.com/onomondo/nrf-softsim/compare/v6.0.0...v6.1.0) (2026-08-25)
+
+
+### Features
+
+* devicetree partition layouts, Partition Manager now optional ([#167](https://github.com/onomondo/nrf-softsim/issues/167)) ([51c177b](https://github.com/onomondo/nrf-softsim/commit/51c177bc9bdea71ac187c0996af8822218e84f47))
+
+
+### Bug Fixes
+
+* abort the real PSA MAC operation in ss_utils_ota_calc_cc ([#152](https://github.com/onomondo/nrf-softsim/issues/152)) ([872c644](https://github.com/onomondo/nrf-softsim/commit/872c644a95065f7f8348dfc1b5e830e48ffacf37))
+* bounds-check the DIR blob in generate_dir_table_from_blob ([#145](https://github.com/onomondo/nrf-softsim/issues/145)) ([6c23ba7](https://github.com/onomondo/nrf-softsim/commit/6c23ba7055950209b47a4be37f05ecafbb45d07e))
+* drop legacy psa_open_key from ss_utils_setup_key_helper ([#157](https://github.com/onomondo/nrf-softsim/issues/157)) ([606bcbb](https://github.com/onomondo/nrf-softsim/commit/606bcbba8fbb3ca819210dd1bb62bab19d992f87))
+* drop legacy psa_open_key from the ss_crypto key-use paths ([#151](https://github.com/onomondo/nrf-softsim/issues/151)) ([351c132](https://github.com/onomondo/nrf-softsim/commit/351c13216b49ca48e5ae8faae9b84904376b0c6e))
+* enable Partition Manager explicitly for the sample ([#155](https://github.com/onomondo/nrf-softsim/issues/155)) ([e819e33](https://github.com/onomondo/nrf-softsim/commit/e819e33d00025e36e674e87b76fa0f24de0b1b91))
+* guard against negative nvs_read return in ss_init_fs ([#148](https://github.com/onomondo/nrf-softsim/issues/148)) ([ee339cf](https://github.com/onomondo/nrf-softsim/commit/ee339cf1b8d3a8f5df0de24c970fa94a5572023a))
+* guard serial profile read against buffer overflow ([#136](https://github.com/onomondo/nrf-softsim/issues/136)) ([9bb330d](https://github.com/onomondo/nrf-softsim/commit/9bb330d7e8f33d1c4a83b8bf62ff322b53c5ffd8))
+* honor SOFTSIM_UICC_*=n in the uicc option wiring ([#179](https://github.com/onomondo/nrf-softsim/issues/179)) ([b59f5a1](https://github.com/onomondo/nrf-softsim/commit/b59f5a177a1bef06230ddf893e86fe92659a6b62))
+* include POSIX socket headers in the external-profile sample ([#156](https://github.com/onomondo/nrf-softsim/issues/156)) ([0a37ac5](https://github.com/onomondo/nrf-softsim/commit/0a37ac5fd6adf69ed3492d2da86acd854e58e33c))
+* null-check cache lookups in ss_fs provisioning ([#150](https://github.com/onomondo/nrf-softsim/issues/150)) ([fe57e88](https://github.com/onomondo/nrf-softsim/commit/fe57e885ec235f6d9fbfbd8c1405a582b5941e9d))
+* query key existence without leaking a PSA handle ([#153](https://github.com/onomondo/nrf-softsim/issues/153)) ([ec85819](https://github.com/onomondo/nrf-softsim/commit/ec85819316bd5de285ec5f5d2da84ae28184a9e6))
+* Thingy:91 X pm_static tfm_nonsecure size ([#104](https://github.com/onomondo/nrf-softsim/issues/104)) ([83381ab](https://github.com/onomondo/nrf-softsim/commit/83381abafb4eaa96eb1259f83ae40f6c94f2b8e6))
+* unblock NCS v3.4.0 integration (sysbuild, nrf_softsim_init, auto-init overlay) ([#171](https://github.com/onomondo/nrf-softsim/issues/171)) ([c263495](https://github.com/onomondo/nrf-softsim/commit/c2634951853be72fec90eff8b1474ede462830f6))
+* validate profile length and required fields before provisioning ([#139](https://github.com/onomondo/nrf-softsim/issues/139)) ([ebe1ae6](https://github.com/onomondo/nrf-softsim/commit/ebe1ae6cd92194ffe4c803bb103b96808a0fb7d5))
+
+## [6.0.0](https://github.com/onomondo/nrf-softsim/compare/v5.1.0...v6.0.0) (2026-06-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* introduce onomondo-uicc as a submodule ([#106](https://github.com/onomondo/nrf-softsim/issues/106))
+* nrf connect sdk v3.0.1 ([#84](https://github.com/onomondo/nrf-softsim/issues/84))
+
+### Features
+
+* introduce an optional modem factory reset upon provisioning ([#141](https://github.com/onomondo/nrf-softsim/issues/141)) ([69925f0](https://github.com/onomondo/nrf-softsim/commit/69925f02ec8a7530a84da705442d5058ae7fe6bd))
+* introduce onomondo-uicc as a submodule ([#106](https://github.com/onomondo/nrf-softsim/issues/106)) ([f1fb69b](https://github.com/onomondo/nrf-softsim/commit/f1fb69b6685f883ceb794f6fb669b31fa01ba2db))
+* nrf connect sdk v3.0.1 ([#84](https://github.com/onomondo/nrf-softsim/issues/84)) ([1a17c3a](https://github.com/onomondo/nrf-softsim/commit/1a17c3adb02540cac0a2a30e5043b037120afcda))
+* provision SMSP/SMSC from the profile ([#140](https://github.com/onomondo/nrf-softsim/issues/140)) ([e7b3362](https://github.com/onomondo/nrf-softsim/commit/e7b33623734bfccf8c8d41e9bd640a9ee5e76b1a))
+
+
+### Bug Fixes
+
+* failed to open a persistent key, ERR: -140 ([#99](https://github.com/onomondo/nrf-softsim/issues/99)) ([bcb0676](https://github.com/onomondo/nrf-softsim/commit/bcb0676eeefcd58fbb5883d38f0eafa526ebf58e))
+* free the old buffer when ss_fputc grows it ([#143](https://github.com/onomondo/nrf-softsim/issues/143)) ([8cd8168](https://github.com/onomondo/nrf-softsim/commit/8cd8168bf2aa72c6630b2b502a3aed4dbbbc37a1))
+* merge static and external SoftSIM samples into one ([#132](https://github.com/onomondo/nrf-softsim/issues/132)) ([d3ee618](https://github.com/onomondo/nrf-softsim/commit/d3ee618a143a4620f851fd468ca2929d83509839))
+* size profile RX buffer for a full onomondo-uicc profile ([#137](https://github.com/onomondo/nrf-softsim/issues/137)) ([9807e74](https://github.com/onomondo/nrf-softsim/commit/9807e74ddd41b2e0577c444d9b740b39405c8c01))
+
 ## [5.1.0](https://github.com/onomondo/nrf-softsim/compare/v5.0.0...v5.1.0) (2025-04-02)
 
 
