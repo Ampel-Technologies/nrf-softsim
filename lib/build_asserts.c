@@ -63,8 +63,11 @@ BUILD_ASSERT(DT_NODE_EXISTS(DT_NODELABEL(boot_partition)),
 /* In the SoftSIM layouts the storage_partition label sits on the nvs_storage
  * node (TF-M derives its non-secure SPU flash region from that label), so a
  * settings backend defaulting to storage_partition would write into the
- * SoftSIM filesystem. */
+ * SoftSIM filesystem. This only applies when Settings actually falls back to
+ * storage_partition, i.e. when the board hasn't pointed zephyr,settings-partition
+ * at a dedicated partition instead (see settings_fcb.c's own fallback logic). */
 #if (defined(CONFIG_SETTINGS_FCB) || defined(CONFIG_SETTINGS_ZMS)) &&                              \
+	!DT_HAS_CHOSEN(zephyr_settings_partition) &&                                               \
 	DT_NODE_EXISTS(DT_NODELABEL(storage_partition)) &&                                         \
 	DT_NODE_EXISTS(DT_NODELABEL(nvs_storage))
 BUILD_ASSERT(!DT_SAME_NODE(DT_NODELABEL(storage_partition), DT_NODELABEL(nvs_storage)),
