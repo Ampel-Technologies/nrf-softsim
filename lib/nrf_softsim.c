@@ -8,6 +8,9 @@
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#if defined(CONFIG_MEMFAULT_NCS_STACK_METRICS)
+#include <memfault_ncs_metrics.h>
+#endif /* CONFIG_MEMFAULT_NCS_STACK_METRICS */
 
 #include "ss_crypto.h"
 #include <nrf_softsim.h>
@@ -96,8 +99,22 @@ int nrf_softsim_init(void)
 
 	k_work_queue_init(&softsim_work_q);
 
+	static const struct k_work_queue_config softsim_wq_cfg = {
+		.name = "softsim_wq",
+	};
+
 	k_work_queue_start(&softsim_work_q, softsim_stack_area,
-			   K_THREAD_STACK_SIZEOF(softsim_stack_area), SOFTSIM_PRIORITY, NULL);
+			   K_THREAD_STACK_SIZEOF(softsim_stack_area), SOFTSIM_PRIORITY,
+			   &softsim_wq_cfg);
+
+#if defined(CONFIG_MEMFAULT_NCS_STACK_METRICS)
+	static struct memfault_ncs_metrics_thread softsim_stack_metric = {
+		.thread_name = "softsim_wq",
+		.key = MEMFAULT_METRICS_KEY(softsim_unused_stack),
+	};
+
+	(void)memfault_ncs_metrics_thread_add(&softsim_stack_metric);
+#endif /* CONFIG_MEMFAULT_NCS_STACK_METRICS */
 
 	/* The SIM context (~5 KB of heap) is allocated lazily by the
 	 * NRF_MODEM_SOFTSIM_INIT request, not here. */
